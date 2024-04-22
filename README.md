@@ -1,19 +1,34 @@
-Employing evolutionary algorithms for determining portfolio combinations and stock weights offers several advantages:
+This repo uses evolutionary algorithms on S&P 100 stocks between the period of 2016 to the end of 2019 to find a portfolio that maximizes the Sharpe-ratio, measuring the combination of return/risk of 
 
-1. **Flexibility**: Evolutionary algorithms are highly adaptable and can handle various constraints and objectives in portfolio optimization. Whether it's maximizing returns, minimizing risk, or achieving a balance between the two, evolutionary algorithms can be tailored to meet specific investment goals.
+To achieve this, we need to perform 2 tasks:
 
-2. **Non-linearity Handling**: Traditional optimization techniques often struggle with non-linear relationships between assets. Evolutionary algorithms, however, are well-suited for handling non-linearity, making them effective in capturing complex interactions between different stocks and assets.
+(1) Determine the optimal 10-stock combination from the list of 100 stocks
 
-3. **Robustness**: Evolutionary algorithms are inherently robust to local optima, meaning they can avoid getting stuck in suboptimal solutions. This robustness is particularly valuable in financial markets where the landscape can be noisy and dynamic.
+(2) Determine the optimal weight combination of the 10 stocks
 
-4. **Diversity in Solutions**: Evolutionary algorithms typically generate diverse sets of solutions, providing decision-makers with a range of potential portfolio combinations and stock weights. This diversity can help in exploring the trade-offs between different investment objectives and risk preferences.
+Overall we achieved multiple approaches that outperform the S&P100 on both the training and testing dataset 
 
-5. **Adaptability to Constraints**: Portfolio optimization often involves numerous constraints, such as maximum investment limits, sector allocations, and liquidity requirements. Evolutionary algorithms can easily incorporate such constraints into the optimization process, ensuring that the generated portfolios adhere to practical investment guidelines.
+During the training period, the optimal portfolio with optimal weight performs the best as intended
+![training_results](https://github.com/trduc97/CS815/assets/52210863/5c6f689f-f323-49bb-9639-0dfd976177d5)
 
-6. **Scalability**: Evolutionary algorithms can handle portfolios with a large number of assets efficiently. As the number of stocks in the universe increases, traditional optimization techniques might become computationally expensive or even infeasible, whereas evolutionary algorithms maintain scalability.
+![training_performance](https://github.com/trduc97/CS815/assets/52210863/111dbbc7-ddb3-43a1-b0a1-02c7c0231abf)
 
-7. **Ability to Explore Complex Search Spaces**: Financial markets exhibit complex dynamics and interactions among assets. Evolutionary algorithms excel in exploring such intricate search spaces, allowing them to discover novel and potentially superior portfolio combinations that might be overlooked by traditional methods.
 
-8. **Dynamic Adaptation**: Financial markets are subject to changing conditions, requiring portfolios to adapt over time. Evolutionary algorithms can be easily extended to handle dynamic portfolio optimization, continuously adjusting portfolio compositions and weights in response to evolving market conditions.
+But checking on the test period, while all the portfolios outperform the index, and optimal weights do perform better than equal weights, the optimal portfolio does not outperform a random portfolio
+![testing_results](https://github.com/trduc97/CS815/assets/52210863/432022ab-5f5e-4de2-8c2b-0da52c1a9906)
 
-In summary, evolutionary algorithms offer a powerful approach to portfolio optimization by combining flexibility, robustness, scalability, and adaptability to handle the complexities and uncertainties of financial markets effectively.
+![testing_performance](https://github.com/trduc97/CS815/assets/52210863/7e239087-2d48-4a45-83f7-d0c4114a95b9)
+
+
+Evolutionary algorithms excel in portfolio optimization for several reasons:
+
+1. **Flexibility**: They adapt to various investment goals and constraints.
+2. **Non-linearity Handling**: Efficiently capture complex asset interactions.
+3. **Robustness**: Avoid getting stuck in suboptimal solutions.
+4. **Diversity**: Offer a range of portfolio options for decision-makers.
+5. **Constraint Adaptation**: Easily incorporate practical investment guidelines.
+6. **Scalability**: Handle large portfolios efficiently.
+7. **Complex Search Exploration**: Discover novel portfolio combinations.
+8. **Dynamic Adaptation**: Adjust portfolios to changing market conditions.
+
+In short, evolutionary algorithms provide a versatile, robust, and efficient approach to portfolio optimization, capable of navigating the complexities of financial markets effectively.
