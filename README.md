@@ -20,7 +20,7 @@ But checking on the test period, while all the portfolios outperform the index, 
 ![testing_performance](https://github.com/trduc97/CS815/assets/52210863/7e239087-2d48-4a45-83f7-d0c4114a95b9)
 
 
-Evolutionary algorithms excel in portfolio optimization for several reasons:
+Evolutionary algorithms is a good solution for portfolio optimization for several reasons:
 
 1. **Flexibility**: They adapt to various investment goals and constraints.
 2. **Non-linearity Handling**: Efficiently capture complex asset interactions.
