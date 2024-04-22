@@ -1,0 +1,655 @@
+---
+title: "Portfolio_optimization"
+author: "Nguyen Trung Duc"
+output:
+  pdf_document: default
+  html_document: default
+---
+#1.Installing the packages  
+
+For the construction of this report in portfolio optimization, we will be using several packages for the following reasons:
+
+## quantmod
+
+- **Purpose:** Used for quantitative financial modeling and analysis.
+
+## rvest
+
+- **Purpose:** Primarily used for web scraping in R.
+
+## TTR (Technical Trading Rules)
+
+- **Purpose:** Designed for technical analysis and building trading rules.
+
+## dplyr
+
+- **Purpose:* data manipulation.
+
+## GA (Genetic Algorithms)
+
+- **Purpose:** Used for optimization problems with genetic algorithms.
+
+```{r installing_packages, echo=FALSE, warning = FALSE, results="hide", message=FALSE}
+options(repos = "https://cloud.r-project.org")
+knitr::opts_chunk$set(echo = TRUE)
+install.packages("quantmod")
+install.packages("rvest")
+install.packages("TTR")
+install.packages("dplyr")
+install.packages("GA")
+library(quantmod)
+library(rvest)
+library(TTR)
+library(dplyr)
+library("GA")
+conflictRules('dplyr', exclude = 'lag')
+```
+
+#2.Download the data
+
+##2.1.Download the list of S&P100 ticker
+
+We will be using stocks data from the S&P100 basket, the main reason for this choice is because:
+
+1. **Liquidity**: Stocks included in the S&P 100 index are mostly regarded as blue chips, meaning they have significant trading volume. High liquidity is essential for efficient portfolio management.
+
+2. **Diversification**: S&P 100 is a diversified set of large-cap stocks across various sectors, this help reduce risk through diversification, spreading risk across different sectors.
+
+3. **Stability**: S&P 100 companies are mostly well-established, large-cap companies with stable performance. 
+
+4. **Information Availability**: These companies are extensively covered by analysts and financial media. 
+
+5. **Risk Management**: As large-cap stocks, S&P 100 tend to be more stable and less volatile than smaller-cap stocks. 
+
+
+To get access to the list of current stocks in the index, we based our selection on the wikipedia page of S&P100
+```{r download_data, echo=FALSE}
+#Download the data
+#Crawling information about the S&P100
+tbl <- read_html('https://en.wikipedia.org/wiki/S%26P_100') %>% html_nodes(css = 'table.wikitable')
+tbl <- tbl[2] %>% html_table() %>% as.data.frame()
+
+# Rename the columns for easier access
+names(tbl) <- c("Ticker.symbol", "Company.name", "Sector")
+
+tbl$Ticker.symbol <- gsub(pattern = '\\.', '-', tbl$Ticker.symbol) # BRK.B -> BRK-B (yahoo uses '-')
+
+all_tickers <-tbl$Ticker.symbol 
+```
+
+##2.2.Crawling data of the selected stocks 
+
+As time-series analysis usually based on multiple assumptions, including absence of outliers, so we would avoid using data between the period of 2020 until now (02/2024) as there are many generational events (Covid-19, Russia invasion of Ukraine), and for this we will be working with data between 2016 to end of 2019. 
+
+```{r crawling_data, echo=FALSE,results = "hide"}
+# Define the start and end dates for data retrieval
+start_date <- "2016-01-01" # One year of historical data
+end_date <- "2020-01-01"
+
+# Create an empty list to store the data for each symbol
+Data <- new.env()
+
+getSymbols(c("^OEX",all_tickers), from=start_date, to=end_date, env=Data)    
+#calculate returns, merge, and create data.frame 
+#(eapply loops over all objects in an environment, applies a function, and returns a list)
+Returns <- eapply(Data, function(s) ROC(Ad(s), type="discrete"))
+ReturnsDF <- as.data.frame(do.call(merge, Returns))
+
+# adjust column names are re-order columns
+colnames(ReturnsDF) <- gsub(".Adjusted","",colnames(ReturnsDF))
+#Adjusting the name for the stocks for consistency
+colnames(ReturnsDF)[colnames(ReturnsDF) == "BRK.B"] <- "BRK-B" 
+
+ReturnsDF <- ReturnsDF[,c("OEX",all_tickers)]
+
+# Remove the first rows of ReturnsDF
+ReturnsDF <- ReturnsDF[-1, ]
+
+```
+##2.3.Splitting the data into train and set  
+
+As there may exist inconsistent between the current stocks in S&P100 and the time period chosen, so we will only be working with stocks that exist through the period. As for splitting the training and testing dataset, we will use the data within the year 2019 as test set and  3 years from 2016 to 2018 as training set
+
+```{r train_test_split, echo=FALSE}
+# Creating a DF of just stock info
+all_columns <- colnames(ReturnsDF)
+columns_to_include <- all_columns[all_columns != "OEX"]
+
+# removing stocks not included during this period
+nan_columns <- colSums(is.na(ReturnsDF))
+columns_to_include <- columns_to_include[!(columns_to_include %in% names(nan_columns[nan_columns > 0]))]
+
+# Create dataframe of just stocks records
+SP100_stocks <- ReturnsDF[, columns_to_include]
+
+# Benchamark data of the S&P100 index
+SP100_index <- ReturnsDF[, "OEX"]
+
+# Setting up the date mark for the train and test set
+split_date <- as.Date("2019-01-01")
+
+# Splitting the stock data
+train_SP100_stocks <- subset(SP100_stocks, as.Date(rownames(SP100_stocks)) <= split_date)
+test_SP100_stocks <- subset(SP100_stocks, as.Date(rownames(SP100_stocks)) > split_date)
+
+# Convert row names to Date format
+rownames(ReturnsDF) <- as.Date(rownames(ReturnsDF))
+
+# Subset the column "OEX" after the split date
+train_SP100_index <- ReturnsDF[rownames(ReturnsDF) <= split_date, "OEX", drop = FALSE]
+test_SP100_index <- ReturnsDF[rownames(ReturnsDF) > split_date, "OEX", drop = FALSE]
+
+train_SP100_list <- as.list(train_SP100_index)
+test_SP100_list <-as.list(test_SP100_index)
+```
+
+#3.Portfolio weight optimization 
+
+##3.1. Create a random combination base on sector percentage
+
+So for a benchmark, we will create a portfolio that take stocks from each sectors based on the percentage of that sector present on the S&P 100, and from t
+```{r return_timeserie, echo=FALSE}
+# Portfolio returns by day
+portfolio_timeserie = function(x, data) {
+  daily_returns = 0
+  # Multiplication of the i-th asset by the i-th weight in "x"
+  for (i in 1:length(x)) {
+    daily_returns = daily_returns + data[,i] * x[i]
+  }
+  return (daily_returns)
+}
+
+```
+
+
+```{r random_portfolio, echo=FALSE}
+# Separting the sector to count
+sector_counts <- tbl %>%
+  group_by(Sector) %>%
+  summarise(Count = n())
+sector_counts
+
+#Set random seed
+set.seed(42)
+
+# Subset the data frame for each sector
+communication_services <- subset(tbl, Sector == "Communication Services")
+consumer_discretionary <- subset(tbl, Sector == "Consumer Discretionary")
+consumer_staples <- subset(tbl, Sector == "Consumer Staples")
+financials <- subset(tbl, Sector == "Financials")
+health_care <- subset(tbl, Sector == "Health Care")
+industrials <- subset(tbl, Sector == "Industrials")
+information_technology <- subset(tbl, Sector == "Information Technology")
+other_sectors <- subset(tbl, Sector %in% c("Energy", "Materials", "Real Estate", "Utilities"))
+
+# Randomly select stocks from each sector
+selected_stocks <- c(
+  sample(communication_services$Ticker.symbol, 1),
+  sample(consumer_discretionary$Ticker.symbol, 1),
+  sample(consumer_staples$Ticker.symbol, 1),
+  sample(financials$Ticker.symbol, 2),
+  sample(health_care$Ticker.symbol, 1),
+  sample(industrials$Ticker.symbol, 1),
+  sample(information_technology$Ticker.symbol, 2),
+  sample(other_sectors$Ticker.symbol, 1)
+)
+
+# Print the randomly selected stocks
+print(selected_stocks)
+
+# Create the DF include the randomly selected stocks
+random_train_data <- train_SP100_stocks[, selected_stocks, drop = FALSE]
+random_test_data <- test_SP100_stocks[, selected_stocks, drop = FALSE]
+```
+
+And each stocks will have a balance weight of 10% witin the portfolio
+
+```{r equal_random, echo=FALSE}
+# Calculate return on a balanced portfolio (each stock has 10%)
+balanced <- rep(0.1, 10)
+
+```
+
+##3.2.Portfolio weight balancing
+
+###3.2.1.Function for portfolio weight calculation
+
+To incorporate both the risk and return factor into the calculation, we will use Sharpe ratio for the fitness function
+\[ S = \frac{{R_p - R_f}}{{\sigma_p}} \]
+Where:
+- \( S \) is the Sharpe ratio  
+- \( R_p \) is the average return of the investment or portfolio  
+- \( R_f \) is the risk-free rate  
+- \( \sigma_p \) is the standard deviation of the investment's returns  
+
+Understanding:
+- Sharpe ratio > 1: The investment is generating excess returns relative to its risk. This is generally considered good.  
+- 1 >= Sharpe ratio >= 0: The investment's returns are acceptable, but may not sufficiently compensating for the risk taken.  
+- Sharpe ratio < 0 : The investment is not providing adequate returns given the level of risk.  
+
+In theory, investors would want to maximize Sharpe ratio by seeking better investment or portfolios. However this should not be the sole purpose and other factors also need to be taken into consideration, including, investment objectives, time horizon, and risk tolerance.  
+
+```{r portfolio_functions, echo=FALSE, result = 'hide'}
+#1 Portfolio returns annualized
+port_returns = function(x, mean_col) {
+  return ((sum(x*mean_col)+1)^252 -1)   # Calculate annualized portfolio return
+}
+
+#2 Portfolio risk annualized
+port_risk = function(x,cov_mat){
+  return(t(x) %*% (cov_mat %*% x)) # Calculate annualized risk
+}
+
+#3 calculating Sharpe ratio
+sharpe = function(x,mean_col, cov_mat) {
+  returns = port_returns(x,mean_col)
+  risk = sqrt(port_risk(x, cov_mat))
+  return (returns/risk)
+}
+
+#4 Penalty for real-values
+constraint = function(x) {
+  boundary_constr = (sum(x)-1)**2   # "sum x = 1" constraint
+  for (i in 1:length(x)) {
+    boundary_constr = boundary_constr + 
+      max(c(0,x[i]-1))**2 +  # "x <= 1" constraint
+      max(c(0,-x[i]))**2     # "x >= 0" constraint
+  }
+  
+  return (boundary_constr)
+}
+
+#5 objective function to find optimal weight of given portfolio base on sharpe ratio  
+obj = function(x,mean_col, cov_mat) {
+  # to make a maximize sharpe ratio optimization, we multiply by -1
+  return (-sharpe(x,mean_col, cov_mat)+10*constraint(x))
+}
+
+#6 function to maximise returns 
+obj_return = function(x,mean_col, cov_mat) {
+  # to make a maximize sharpe ratio optimization, we multiply by -1
+  return ((1/port_returns(x,mean_col))+10*constraint(x))
+}
+
+#6 function to minimize risk  
+obj_risk = function(x,mean_col, cov_mat) {
+  # to make a maximize sharpe ratio optimization, we multiply by -1
+  return (sqrt(port_risk(x, cov_mat))+10*constraint(x))
+}
+
+
+
+#6 function to output risk, return and sharpe ratio of a chosen portfolio
+
+result_cal <- function(x, data, results, name) {
+  data_colmeans <- colMeans(data, na.rm = TRUE) 
+  data_covmat <- cov(data) * 252  # annualized the value
+  returns <- port_returns(x, data_colmeans)
+  risk <- sqrt(port_risk(x, data_covmat))
+  ratio <- returns / risk
+  
+  # Add new row to the results dataframe
+  new_row <- data.frame(Name = name, Return = returns, Risk = risk, Sharpe_ratio = ratio)
+  results <- rbind(results, new_row)
+  
+  return(results)
+}
+
+```
+
+###3.2.2. Optimising the weight within the given portfolio
+
+With the current selected portfolio, we will be apply 3 different approach, first is to maximise the Sharpe ratio (without including the risk free rate as this information is limited access by yahoo), second is to maximise the return, and third is to minimise the risk of the portfolio
+
+```{r apply_ga, echo=FALSE}
+# Weight optimization 
+# Set up algorithm to maximise Sharpe ratio
+weight_optimise <- function(data, maxiter= 50000, run=500) {
+  # Calculate column means and covariance matrix outside of the objective function so only need to perform it once
+  data_colmeans <- colMeans(data, na.rm=TRUE) 
+  data_covmat <- cov(data)*252 # annualized the value
+   
+  # Genetic algorithm optimization
+  weight_res <- ga(
+    type = "real-valued", 
+    fitness = function(x) {-obj(x, data_colmeans, data_covmat)}, 
+    lower = rep(0,ncol(data)),       # x_i >= 0
+    upper = rep(1,ncol(data)),       # x_i <= 1
+    maxiter = maxiter,   # Maximum number of iterations 
+    run = run,           # Early stopping if no improvement after 'run' iterations
+    monitor = FALSE,
+    seed = 42
+  )
+  print(summary(weight_res))
+  plot(weight_res)
+  # Extract and return the resulting weights
+  sol_weight <- as.vector(summary(weight_res)$solution)
+  return(sol_weight)
+}
+
+
+# Set up algorithm to maximise returns
+return_optimise <- function(data, maxiter= 50000, run=500) {
+  # Calculate column means and covariance matrix outside of the objective function so only need to perform it once
+  data_colmeans <- colMeans(data, na.rm=TRUE) 
+  data_covmat <- cov(data)*252 # annualized the value
+   
+  # Genetic algorithm optimization
+  weight_res <- ga(
+    type = "real-valued", 
+    fitness = function(x) {-obj_return(x, data_colmeans, data_covmat)}, 
+    lower = rep(0,ncol(data)),       # x_i >= 0
+    upper = rep(1,ncol(data)),       # x_i <= 1
+    maxiter = maxiter,   # Maximum number of iterations 
+    run = run,           # Early stopping if no improvement after 'run' iterations
+    monitor = FALSE,
+    seed = 42
+  )
+  print(summary(weight_res))
+  plot(weight_res)
+  # Extract and return the resulting weights
+  sol_weight <- as.vector(summary(weight_res)$solution)
+  return(sol_weight)
+}
+
+risk_optimise <- function(data, maxiter= 50000, run=500) {
+  # Calculate column means and covariance matrix outside of the objective function so only need to perform it once
+  data_colmeans <- colMeans(data, na.rm=TRUE) 
+  data_covmat <- cov(data)*252 # annualized the value
+   
+  # Genetic algorithm optimization
+  weight_res <- ga(
+    type = "real-valued", 
+    fitness = function(x) {-obj_risk(x, data_colmeans, data_covmat)}, 
+    lower = rep(0,ncol(data)),       # x_i >= 0
+    upper = rep(1,ncol(data)),       # x_i <= 1
+    maxiter = maxiter,   # Maximum number of iterations 
+    run = run,           # Early stopping if no improvement after 'run' iterations
+    monitor = FALSE,
+    seed = 42
+  )
+  print(summary(weight_res))
+  plot(weight_res)
+  # Extract and return the resulting weights
+  sol_weight <- as.vector(summary(weight_res)$solution)
+  return(sol_weight)
+}
+
+
+# Store the resulting weights in a vector
+sol_random <- weight_optimise(random_train_data)
+
+sol_random_return <- return_optimise(random_train_data)
+
+sol_random_risk <- risk_optimise(random_train_data)
+
+```
+
+#4.Choosing optimal portfolio 
+
+##4.1. Function for finding optimal stock combination
+
+To find an optimal combination of stock, we will use the GA function and switch to type = "binary". In this method, we will continuously create binary lists of values the length of all stocks available on the S&P 100. To limit the choice to just 10 stocks, we divide the binary values by number of stock we want (in this case 10), and use the same sum = 100% as we were using on the weight optimisation.   
+
+As we have a very large number of combination to test out so we will be using a high level of mutation and elitism to increase our chance of avoiding any local maxima.
+
+
+```{r combo_function, echo=FALSE}
+combo_optimise <- function(data, 
+                           nBits= ncol(data), 
+                           maxiter=50000, 
+                           run=500,
+                           popSize=80,
+                           crossover = 0.5,
+                           mutation = 0.5,
+                           elite = 5,
+                           stock_count = 10 # Define how many stock we want in the combination
+                           ) {
+  data_colmeans <- colMeans(data, na.rm=TRUE)
+  data_covmat <- cov(data)*252
+  combo_res = ga(
+    type="binary", 
+    fitness = function(x){-obj(x/stock_count, #to maintain the sum as 1 
+                              data_colmeans, data_covmat)}, 
+    nBits = nBits, # Number of stocks from the pool
+    maxiter = maxiter,   # Maximum number of iterations 
+    run=run,   # stop if no improvement after 50 consecutive iteration,
+    popSize = popSize, 
+    pcrossover = crossover,
+    pmutation = mutation,
+    elitism = elite,
+    monitor=FALSE,
+    seed=42
+)
+  print(summary(combo_res))
+  # Plot the filtered data
+  plot(combo_res)
+      # Extract and return the resulting weights
+  sol_weight <- as.vector(summary(combo_res)$solution)
+  sol_weight <- sol_weight/stock_count # to convert binary result to equal weight
+  return(sol_weight)
+}
+```
+
+##4.2. Finding the optimal combination
+```{r portfolio_picking, echo=FALSE}
+optimal_combo <- combo_optimise(data=train_SP100_stocks)
+
+# Apply the weight on the test dataset
+optimal_combo_equal_weight_returns <- portfolio_timeserie(optimal_combo, test_SP100_stocks)
+```
+##4.3. Optimising the portfolio weight
+
+###4.3.1. Creating a subset of the chosen stocks
+```{r Create_subset, echo=FALSE}
+# Select columns based on solution
+selected_columns <- names(train_SP100_stocks)[as.logical(optimal_combo*10)]
+
+# Create a new dataframe with selected columns
+optimal_portDF <- train_SP100_stocks[selected_columns]
+optimal_testDF <- test_SP100_stocks[selected_columns]
+```
+
+```{r check_picked_stocks, echo=FALSE}
+# Get stocks names
+optimal_stocks_list <- colnames(optimal_portDF)
+
+# Get column names
+column_names <- colnames(tbl)
+# Filter rows where Ticker.symbol matches column names
+matching_rows <- tbl[tbl$Ticker.symbol %in% optimal_stocks_list, ]
+# Show matching rows
+print(matching_rows)
+```
+The selected portfolio visually show a diverse portfolio between high yield sector and stable stocks so we can expect diversification within the portfolio.
+
+###4.3.2. Optimise portfolio weight
+```{r, optimise_twice, echo=FALSE}
+sol_twice <- weight_optimise(optimal_portDF)
+optimal_combo_optimal_weight_returns <- portfolio_timeserie(sol_twice, optimal_testDF)
+```
+
+
+#5. Result  
+##5.1. On the train set
+### Checking the result on the train set  
+
+We examinate the Sharpe ratio, risk and return of the portfolios on the traning dataset between 2016 and 2018
+
+```{r result_table_train, echo=FALSE}
+
+# Applied the result on the train set for review
+balanced_random_returns <- portfolio_timeserie(balanced, random_train_data)
+
+# Apply the weight on the train dataset
+random_optimized_returns <- portfolio_timeserie(sol_random, random_train_data)
+
+random_return_maximise <- portfolio_timeserie(sol_random_return, random_train_data)
+
+random_risk_minimise <- portfolio_timeserie(sol_random_risk, random_train_data)
+
+# Apply the weight on the train dataset
+optimal_combo_equal_weight_returns <- portfolio_timeserie(optimal_combo, train_SP100_stocks)
+
+# Apply the optimal weight on the optimal portfolio with the train dataset
+optimal_combo_optimal_weight_returns <- portfolio_timeserie(sol_twice, optimal_portDF)
+
+
+# Define an empty dataframe to store results
+results_table_train <- data.frame(Name = character(), Return = numeric(), Risk = numeric(), Sharpe_ratio = numeric())
+
+# Call the result_cal function for each portfolio and update the results_table dataframe
+results_table_train <- result_cal(balanced, random_train_data, results_table_train, "Random Stocks Equal Weight - train")
+results_table_train <- result_cal(sol_random, random_train_data, results_table_train, "Random Stocks Optimized Weight - train")
+
+results_table_train <- result_cal(sol_random_return, random_train_data, results_table_train, "Random Stocks Maximise Returns - train")
+
+results_table_train <- result_cal(sol_random_risk, random_train_data, results_table_train, "Random Stocks Minimise Risk - train")
+
+results_table_train <- result_cal(optimal_combo, train_SP100_stocks, results_table_train, "Optimal Portfolio Equal Weight - train")
+results_table_train <- result_cal(sol_twice, optimal_portDF, results_table_train, "Optimal Portfolio Optimized Weight - train")
+print(results_table_train)
+```
+
+###Graphing the cummulative returns of the portfolios
+
+```{r train_visualization, echo=FALSE}
+# Create a color palette for the plot
+colors <- c("blue", "red", "skyblue", "violet", "peru", "pink", "orange", "cyan", "magenta", "yellow")
+
+# Plot the return of the S&P100 "OEX"
+plot(cumsum(train_SP100_list$OEX), type = "l", lwd = 3, col = "black", 
+     ylim = c(-0.1, 1.7), 
+     xlab = "Time", 
+     ylab = "Cumulative Returns")
+
+# Plotting the return of the component stocks
+#for (i in 1:ncol(random_data)) {
+#  lines(cumsum(random_data[, i]), col = colors[i])}
+
+# Add the plot of the random portfolio with equal weight
+lines(cumsum(balanced_random_returns), col = "skyblue",type = "l", lwd = 3)
+
+# Add the plot of the random portfolio with optimised weight
+lines(cumsum(random_optimized_returns), col = "blue",type = "l", lwd = 3)
+
+# Add the plot of the random portfolio with maximise returns
+lines(cumsum(random_return_maximise), col = "cyan",type = "l", lwd = 3)
+
+# Add the plot of the random portfolio with minimised risk
+lines(cumsum(random_risk_minimise), col = "magenta",type = "l", lwd = 3)
+
+# Add the plot for the optimal portfolio with equal weight 
+lines(cumsum(optimal_combo_equal_weight_returns ), col = "orange",type = "l", lwd = 3)
+
+# Add the plot for the optimal portfolio with optimal weight
+lines(cumsum(optimal_combo_optimal_weight_returns), col = "red",type = "l", lwd = 3)
+
+# Add a legend outside of the graph
+legend("topleft", legend = c("S&P100 'OEX'", 
+                              "Random Stocks Equal Weight", 
+                              "Random Stocks Optimized Weight", 
+                              "Random Stocks Maximise Returns",
+                              "Random Stocks Minimise Risk",
+                             "Optimal Portfolio Equal Weight", 
+                              "Optimal Portfolio Optimized Weight"), 
+       col = c("black", "skyblue", "blue","cyan","magenta", "orange", "red"), 
+       lwd = 3, 
+       cex = 0.8)
+
+```
+
+First of all, we can see all the portfolios outperform the S&P 100 index.
+On the training set we see that all of the objective functions perform well within expectation, and showing the expected result where applying optimisation on the weight of a portfolio improve the sharpe ratio result, and an optimal picked portfolio of 10 is better than a randomly picked porftolio.  
+ 
+The results for the maximise return and minimise risk portfolios also show the clear linear relationship, with the max return also result in a high risk, and a low risk result in low return
+
+##5.2. On the test set
+
+### Checking the result on the test set  
+
+We examine the Sharpe ratio, risk and return of the portfolios on the test dataset in the year 2019
+
+```{r result_table_test, echo=FALSE}
+# Applied the result on the test set for bench marking
+balanced_random_returns <- portfolio_timeserie(balanced, random_test_data)
+
+# Apply the weight on the test dataset
+random_optimized_returns <- portfolio_timeserie(sol_random, random_test_data)
+
+random_return_maximise <- portfolio_timeserie(sol_random_return, random_test_data)
+
+random_risk_minimise <- portfolio_timeserie(sol_random_risk, random_test_data)
+
+# Apply the weight on the test dataset
+optimal_combo_equal_weight_returns <- portfolio_timeserie(optimal_combo, test_SP100_stocks)
+
+# Apply the optimal weight on the optimal portfolio on the test dataset
+optimal_combo_optimal_weight_returns <- portfolio_timeserie(sol_twice, optimal_testDF)
+
+# Define an empty dataframe to store results
+results_table_test <- data.frame(Name = character(), Return = numeric(), Risk = numeric(), Sharpe_ratio = numeric())
+
+# Call the result_cal function for each portfolio and update the results_table dataframe
+results_table_test <- result_cal(balanced, random_test_data, results_table_test, "Random Stocks Equal Weight - test")
+results_table_test <- result_cal(sol_random, random_test_data, results_table_test, "Random Stocks Optimized Weight - test")
+
+results_table_test <- result_cal(sol_random_return, random_test_data, results_table_test, "Random Stocks Maximise Returns - test")
+
+results_table_test <- result_cal(sol_random_risk, random_test_data, results_table_test, "Random Stocks Minimise Risk - test")
+
+results_table_test <- result_cal(optimal_combo, test_SP100_stocks, results_table_test, "Optimal Portfolio Equal Weight - test")
+results_table_test <- result_cal(sol_twice, optimal_testDF, results_table_test, "Optimal Portfolio Optimized Weight - test")
+
+print(results_table_test)
+```
+###Graphing the cummulative returns of the portfolios
+
+```{r test_visualization, echo=FALSE}
+# Create a color palette for the plot
+colors <- c("blue", "red", "skyblue", "violet", "peru", "pink", "orange", "cyan", "magenta", "yellow")
+
+# Plot the return of the S&P100 "OEX"
+plot(cumsum(test_SP100_list$OEX), type = "l", lwd = 3, col = "black", 
+     ylim = c(-0.05, .5), 
+     xlab = "Time", 
+     ylab = "Cumulative Returns")
+
+# Plotting the return of the component stocks
+#for (i in 1:ncol(random_data)) {
+#  lines(cumsum(random_data[, i]), col = colors[i])}
+
+# Add the plot of the random portfolio with equal weight
+lines(cumsum(balanced_random_returns), col = "skyblue",type = "l", lwd = 3)
+
+# Add the plot of the random portfolio with optimised weight
+lines(cumsum(random_optimized_returns), col = "blue",type = "l", lwd = 3)
+
+# Add the plot of the random portfolio with optimised weight
+lines(cumsum(random_return_maximise), col = "cyan",type = "l", lwd = 3)
+
+# Add the plot of the random portfolio with optimised weight
+lines(cumsum(random_risk_minimise), col = "magenta",type = "l", lwd = 3)
+
+
+# Add the plot for the optimal portfolio with equal weight 
+lines(cumsum(optimal_combo_equal_weight_returns ), col = "orange",type = "l", lwd = 3)
+
+# Add the plot for the optimal portfolio with optimal weight
+lines(cumsum(optimal_combo_optimal_weight_returns), col = "red",type = "l", lwd = 3)
+
+# Add a legend outside of the graph
+legend("topleft", legend = c("S&P100 'OEX'", 
+                              "Random Stocks Equal Weight", 
+                              "Random Stocks Optimized Weight", 
+                              "Random Stocks Maximise Returns",
+                              "Random Stocks Minimise Risk",
+                             "Optimal Portfolio Equal Weight", 
+                              "Optimal Portfolio Optimized Weight"), 
+       col = c("black", "skyblue", "blue","cyan","magenta", "orange", "red"), 
+       lwd = 3, 
+       cex = 0.8)
+
+```
+Once again, we see all the portfolio outperform the S&P100 index. 
+On the testing set, the result of the risk minimised function also show a similarly low risk, and while the weight optimisation still maintain a good improvement compare to balanced weights, the previously optimal chosen portfolios perform worse, this may indicate the portfolio has not been as diversified as we would like, or maybe a group of 10 is not the optimal number to diversify in the market.  
